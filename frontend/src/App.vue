@@ -1,11 +1,25 @@
-<script setup lang="ts"></script>
+<script setup lang="ts">
+import { RouterView } from 'vue-router'
+import AppHeader from '@/components/layout/AppHeader.vue'
+import AppToast from '@/components/layout/AppToast.vue'
+import { useThemeStore } from '@/stores/theme'
+
+// Initialize theme store (applies class to <html>)
+useThemeStore()
+</script>
 
 <template>
-  <h1>You did it!</h1>
-  <p>
-    Visit <a href="https://vuejs.org/" target="_blank" rel="noopener">vuejs.org</a> to read the
-    documentation
-  </p>
+  <div class="min-h-screen bg-background text-foreground">
+    <AppHeader />
+    <RouterView v-slot="{ Component }">
+      <transition
+        enter-active-class="transition-opacity duration-200 ease-out"
+        enter-from-class="opacity-0"
+        enter-to-class="opacity-100"
+      >
+        <component :is="Component" />
+      </transition>
+    </RouterView>
+    <AppToast />
+  </div>
 </template>
-
-<style scoped></style>
