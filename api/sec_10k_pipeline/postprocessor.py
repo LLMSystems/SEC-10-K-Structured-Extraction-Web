@@ -12,6 +12,7 @@ Postprocessor
 
 from __future__ import annotations
 from sec_10k_pipeline.models import RawItem, ItemResult, FilingMetadata
+from sec_10k_pipeline.render_item8_markdown import render_html_fragment_with_tables
 from sec_10k_pipeline.patterns import (
     ITEM_META,
     ITEM_NUMBERS,
@@ -60,6 +61,12 @@ class PostProcessor:
                 result = self._classify(num, part, std_title, content, raw, metadata)
 
             results.append(result)
+            
+        # table to markdown
+        for r in results:
+            if r.content_text is not None:
+                r.content_text = render_html_fragment_with_tables(r.content_text)
+
 
         return results
 

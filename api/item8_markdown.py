@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from item8_xbrl_facts import get_item8_xbrl_facts, USER_AGENT
-from render_item8_markdown import render_markdown
+from sec_10k_pipeline.item8_xbrl_facts import get_item8_xbrl_facts, USER_AGENT
+from sec_10k_pipeline.render_item8_markdown import render_markdown
 
 __all__ = ["get_item8_markdown"]
 
