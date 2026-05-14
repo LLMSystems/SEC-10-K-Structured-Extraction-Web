@@ -31,7 +31,7 @@
 
 prompt 例如(通常會搭配 [fastapi-job-api-backend](../prompt/skills/fastapi-job-api-backend/SKILL.md) skill)：
 
-- 幫我先把 FastAPI 的 job API 骨架生出來，核心是 POST /jobs 送出後要立刻回 job_id，不要等長任務跑完
+- 幫我根據 [後端設計文檔](../docs/api-design.md) 先把 FastAPI 的 job API 骨架生出來，核心是 POST /jobs 送出後要立刻回 job_id，不要等長任務跑完
 - 幫我把雙輸入模式補上，除了 cik + accession_number，也要支援直接丟 EDGAR URL(可以參考`./api/sec_10k_pipeline/pipeline.py`)
 - 我現在要補 Item status，請把 extracted、incorporated_by_reference、not_applicable、reserved、missing 五種狀態都整理進輸出
 - 幫我加一個 /xbrl-markdown，流程是先抓 Item 8 的 XBRL facts，區分主要報表與補充保表，並組成 md 檔 後直接回 markdown 文字(請先幫我網路搜索整理 xbrl api重點，整理後先跟我討論，確定規格後再進行初版開發)
