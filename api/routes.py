@@ -14,7 +14,17 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from models.job import JobCreateRequest, JobCreateResponse, JobStatusResponse
+from fastapi import Query
+
+from models.job import (
+    JobCreateRequest,
+    JobCreateResponse,
+    JobStatusResponse,
+    AdminStats,
+    FilingListResponse,
+    FlagAnalytics,
+    JobAnalytics,
+)
 from cache import CacheService
 from sec_10k_pipeline.models import FilingInput, FilingOutput
 from utils import parse_sec_url
@@ -97,6 +107,35 @@ async def get_job(job_id: str):
         created_at=job["created_at"],
         completed_at=job.get("completed_at"),
     )
+
+
+@router.get("/admin/stats", response_model=AdminStats)
+async def admin_stats():
+    """後台 KPI 彙總。"""
+    return await _cache.get_filings_stats()
+
+
+@router.get("/admin/filings", response_model=FilingListResponse)
+async def admin_filings(
+    sort: str = Query("score_asc", pattern="^(score_asc|score_desc|recent)$"),
+    only: str = Query("all", pattern="^(all|errors|invalid)$"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """後台待審佇列：列出 filings 與品質彙總，預設最低分優先。"""
+    return await _cache.list_filings(sort=sort, only=only, limit=limit, offset=offset)
+
+
+@router.get("/admin/flag-stats", response_model=FlagAnalytics)
+async def admin_flag_stats():
+    """④ 規則分析：flag 頻率、parser 彙總、平均各階段耗時。"""
+    return await _cache.get_flag_analytics()
+
+
+@router.get("/admin/job-stats", response_model=JobAnalytics)
+async def admin_job_stats(failures_limit: int = Query(20, ge=1, le=100)):
+    """⑤ 系統健康：job 狀態分佈與最近失敗清單。"""
+    return await _cache.get_job_analytics(failures_limit=failures_limit)
 
 
 @router.get("/filings/{accession_number}", response_model=FilingOutput)

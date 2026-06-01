@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, FileText, Moon, Sun } from 'lucide-vue-next'
+import { ArrowLeft, FileText, LayoutDashboard, Moon, Sun } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { useThemeStore } from '@/stores/theme'
 import { useJobStore } from '@/stores/job'
@@ -63,6 +63,14 @@ function goHome() {
       </template>
 
       <div class="ml-auto flex items-center gap-1">
+        <RouterLink
+          to="/admin"
+          class="inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          :class="{ 'bg-accent text-foreground': route.path.startsWith('/admin') }"
+        >
+          <LayoutDashboard class="h-4 w-4" />
+          <span class="hidden sm:inline">後台</span>
+        </RouterLink>
         <Button
           variant="ghost"
           size="icon"

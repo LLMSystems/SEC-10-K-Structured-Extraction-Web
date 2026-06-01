@@ -1,5 +1,11 @@
 import type {
+  AdminStats,
+  FilingFilter,
+  FilingListResponse,
   FilingOutput,
+  FilingSort,
+  FlagAnalytics,
+  JobAnalytics,
   JobResponse,
   JobSubmitInput,
   JobSubmitResponse,
@@ -51,6 +57,30 @@ export const api = {
   },
   getFiling(accessionNumber: string): Promise<FilingOutput> {
     return request<FilingOutput>(`/filings/${accessionNumber}`)
+  },
+  // ── Admin / Dashboard ──
+  adminStats(): Promise<AdminStats> {
+    return request<AdminStats>('/admin/stats')
+  },
+  adminFilings(params: {
+    sort?: FilingSort
+    only?: FilingFilter
+    limit?: number
+    offset?: number
+  } = {}): Promise<FilingListResponse> {
+    const qs = new URLSearchParams()
+    if (params.sort) qs.set('sort', params.sort)
+    if (params.only) qs.set('only', params.only)
+    if (params.limit != null) qs.set('limit', String(params.limit))
+    if (params.offset != null) qs.set('offset', String(params.offset))
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<FilingListResponse>(`/admin/filings${suffix}`)
+  },
+  adminFlagStats(): Promise<FlagAnalytics> {
+    return request<FlagAnalytics>('/admin/flag-stats')
+  },
+  adminJobStats(): Promise<JobAnalytics> {
+    return request<JobAnalytics>('/admin/job-stats')
   },
   // POST /xbrl-markdown — synchronous, 5–15s, returns text/markdown
   async xbrlMarkdown(cik: string, accession_number: string): Promise<string> {

@@ -7,6 +7,17 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'home', component: HomeView },
     { path: '/result/:jobId', name: 'result', component: ResultView, props: true },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('@/views/AdminView.vue'),
+    },
+    {
+      path: '/admin/filings/:accession',
+      name: 'admin-filing',
+      component: () => import('@/views/AdminFilingDetailView.vue'),
+      props: true,
+    },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
   scrollBehavior() {

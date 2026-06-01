@@ -17,9 +17,24 @@ CREATE TABLE IF NOT EXISTS filings (
     accession_number TEXT PRIMARY KEY,
     result_json      TEXT NOT NULL,
     fetched_at       TEXT NOT NULL,
-    processing_ms    INTEGER
+    processing_ms    INTEGER,
+    parser_name      TEXT,
+    quality_score    REAL,
+    quality_valid    INTEGER,
+    quality_errors   INTEGER,
+    quality_warnings INTEGER
 )
 """
+
+# 既有 DB 用：CREATE TABLE IF NOT EXISTS 不會替舊表補欄位，
+# 因此額外做一次冪等的 ALTER TABLE 補欄位（欄位已存在則跳過）。
+_FILINGS_MIGRATIONS = {
+    "parser_name":      "ALTER TABLE filings ADD COLUMN parser_name TEXT",
+    "quality_score":    "ALTER TABLE filings ADD COLUMN quality_score REAL",
+    "quality_valid":    "ALTER TABLE filings ADD COLUMN quality_valid INTEGER",
+    "quality_errors":   "ALTER TABLE filings ADD COLUMN quality_errors INTEGER",
+    "quality_warnings": "ALTER TABLE filings ADD COLUMN quality_warnings INTEGER",
+}
 
 _CREATE_JOBS = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -63,6 +78,16 @@ async def init_db(db_path: Path = DATABASE_URL) -> None:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_FILINGS)
         await db.execute(_CREATE_JOBS)
+        await _migrate_filings(db)
         for index in _CREATE_INDEXES:
             await db.execute(index)
         await db.commit()
+
+
+async def _migrate_filings(db: aiosqlite.Connection) -> None:
+    """替既有 filings 表補上缺少的欄位（冪等）。"""
+    async with db.execute("PRAGMA table_info(filings)") as cursor:
+        existing = {row[1] for row in await cursor.fetchall()}
+    for column, ddl in _FILINGS_MIGRATIONS.items():
+        if column not in existing:
+            await db.execute(ddl)

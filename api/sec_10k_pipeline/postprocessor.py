@@ -224,13 +224,22 @@ class PostProcessor:
             )
 
         # 4. 內容實質上只有 "Not Applicable" / "N/A" / "None"
-        #    跳過第一行（Item 標題），只看第一行實際內容，
-        #    避免後面跟著 Glossary / Table of Contents 等章節導致誤判長度
-        plain_body = plain.split("\n", 1)[-1].strip()  # 跳過第一行（Item 標題）
-        first_content_line = next(
-            (l.strip() for l in plain_body.splitlines() if l.strip()), ""
+        #    標題可能佔多行，且文件用的標題未必等於標準標題（例 Item 16 用
+        #    "SUMMARY" 而非 "Form 10-K Summary"），因此不依賴標題比對：
+        #        ITEM 16.
+        #        SUMMARY
+        #        None
+        #    判定條件（內容夠短的前提下）：
+        #      (a) 任一行「整行就是」N/A token（None / N/A / Not Applicable），或
+        #      (b) 跳過編號行後的第一行內容本身是 N/A 語句（如 "Not applicable to ..."）。
+        plain_body = plain.split("\n", 1)[-1].strip()       # 給 Mine Safety 用
+        content_lines = self._lines_after_heading(plain, num, std_title)
+        content_body = "\n".join(content_lines)
+        first_content_line = content_lines[0] if content_lines else ""
+        looks_na = any(self._is_na_token(line) for line in content_lines) or (
+            len(first_content_line) < 100 and NOT_APPLICABLE_PATTERN.search(first_content_line)
         )
-        if len(first_content_line) < 100 and len(plain_body) <500 and NOT_APPLICABLE_PATTERN.search(first_content_line):
+        if len(content_body) < 500 and looks_na:
             return ItemResult(
                 part=part,
                 item_number=num,
@@ -328,6 +337,41 @@ class PostProcessor:
 
     def _normalize_ws(self, text: str) -> str:
         return re.sub(r"\s+", " ", text).strip()
+
+    # 「整行就是」不適用宣告的 token（容許結尾標點）
+    _NA_TOKENS = {"none", "n/a", "na", "not applicable"}
+
+    def _is_na_token(self, line: str) -> bool:
+        norm = self._normalize_ws(line).strip(" .;:").lower()
+        return norm in self._NA_TOKENS
+
+    def _lines_after_heading(self, plain: str, num: str, std_title: str) -> list[str]:
+        """
+        跳過開頭的 Item 編號行與標準標題行，回傳其後的非空白內容行。
+
+        處理標題被拆成多行的情況，例如：
+            ITEM 1B.
+            UNRESOLVED STAFF COMMENTS
+            None.
+        會回傳 ["None."]。
+        """
+        title_norm = self._normalize_ws(std_title).lower()
+        item_heading_re = re.compile(rf"^item\s+{re.escape(num)}\b", re.IGNORECASE)
+
+        lines = [l.strip() for l in plain.splitlines() if l.strip()]
+        idx = 0
+        while idx < len(lines):
+            norm = self._normalize_ws(lines[idx]).lower()
+            # 編號行（如 "ITEM 1B." 或 "ITEM 1B. UNRESOLVED STAFF COMMENTS"）
+            if item_heading_re.match(norm):
+                idx += 1
+                continue
+            # 獨立的標準標題行（如 "UNRESOLVED STAFF COMMENTS"）
+            if title_norm and norm == title_norm:
+                idx += 1
+                continue
+            break
+        return lines[idx:]
 
     def _remove_internal_markers(self, text: str) -> str:
         text = ANCHOR_MARKER_PATTERN.sub("", text)

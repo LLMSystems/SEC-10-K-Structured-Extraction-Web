@@ -31,7 +31,10 @@ from sec_10k_pipeline.patterns import (
 )
 from sec_10k_pipeline.parsers.regex_parser import RegexParser
 from sec_10k_pipeline.parsers.hybrid import HybridParser
+from sec_10k_pipeline.parsers.base import ParseResult
 from sec_10k_pipeline.postprocessor import PostProcessor
+from sec_10k_pipeline.validators import Validator
+from sec_10k_pipeline.models import ItemResult, QualityReport
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,7 @@ class Pipeline:
             ],
         )
         self.postprocessor = PostProcessor()
+        self.validator = Validator()
 
     def run(
         self,
@@ -109,6 +113,14 @@ class Pipeline:
         items = self.postprocessor.process(parse_result.raw_items, doc.text, metadata)
         postprocess_sec = time.perf_counter() - t0
 
+        # 6. 驗證 → 產出 QualityReport，並回填 confidence / flag_codes
+        quality = self._apply_quality(parse_result, items, doc.text, metadata)
+        logger.info(
+            f"驗證：score={quality.score} valid={quality.is_valid} "
+            f"errors={quality.counts.get('error', 0)} "
+            f"warnings={quality.counts.get('warning', 0)}"
+        )
+
         output = FilingOutput(
             filing_info=FilingInfo(
                 cik=metadata.cik,
@@ -124,12 +136,37 @@ class Pipeline:
                 parse_sec=round(parse_sec, 3),
                 postprocess_sec=round(postprocess_sec, 3),
             ),
+            quality=quality,
         )
 
         if save_to is not None:
             self._save(output, metadata, doc.text, Path(save_to))
 
         return output
+
+    def _apply_quality(
+        self,
+        parse_result: ParseResult,
+        items: list[ItemResult],
+        text: str,
+        metadata: FilingMetadata,
+    ) -> QualityReport:
+        """跑驗證層，並把 confidence / flag_codes 回填到各 ItemResult。"""
+        quality = self.validator.validate(
+            parse_result.raw_items, items, text, metadata, parse_result
+        )
+
+        conf_map = {raw.item_number: raw.confidence for raw in parse_result.raw_items}
+        codes_by_item: dict[str, list[str]] = {}
+        for flag in quality.flags:
+            if flag.item_number:
+                codes_by_item.setdefault(flag.item_number, []).append(flag.code)
+
+        for item in items:
+            item.confidence = conf_map.get(item.item_number)
+            item.flag_codes = codes_by_item.get(item.item_number, [])
+
+        return quality
 
     def _save(
         self,
