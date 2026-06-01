@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ArrowRight } from 'lucide-vue-next'
@@ -39,11 +39,17 @@ async function onSubmit(e: Event) {
   await jobStore.submitJob(validation.value.payload)
 }
 
-// Navigate to result when ready; toast on cache hit
+// Navigate to result when ready; toast on cache hit.
+// flush: 'post' 確保 watcher 在 Vue 完成所有組件更新後才執行，
+// 避免在 setInterval async 回調觸發 phase='done' 時，Vue 更新佇列
+// 尚未刷完就呼叫 router.push 造成間歇性靜默失敗。
 watch(
   () => jobStore.phase,
   (phase, prev) => {
     if (phase === 'done' && jobStore.jobId) {
+      // 立即 capture 當下的 jobId，避免 nextTick/setTimeout 執行時
+      // store 被 reset 而讀到 null
+      const targetId = jobStore.jobId
       if (jobStore.cacheHit) {
         toastStore.push({
           title: '快取命中',
@@ -51,9 +57,9 @@ watch(
           variant: 'info',
           duration: 2500,
         })
-        setTimeout(() => router.push(`/result/${jobStore.jobId}`), 400)
+        nextTick(() => router.push(`/result/${targetId}`))
       } else {
-        router.push(`/result/${jobStore.jobId}`)
+        nextTick(() => router.push(`/result/${targetId}`))
       }
     }
     if (phase === 'error' && prev !== 'error') {
@@ -65,6 +71,7 @@ watch(
       })
     }
   },
+  { flush: 'post' },
 )
 
 function setMode(v: string) {
