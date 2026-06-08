@@ -1,6 +1,7 @@
 import type {
   AdminStats,
   FilingFilter,
+  FilingItem,
   FilingListResponse,
   FilingOutput,
   FilingSort,
@@ -55,8 +56,12 @@ export const api = {
   getJob(jobId: string): Promise<JobResponse> {
     return request<JobResponse>(`/jobs/${jobId}`)
   },
-  getFiling(accessionNumber: string): Promise<FilingOutput> {
-    return request<FilingOutput>(`/filings/${accessionNumber}`)
+  getFiling(accessionNumber: string, opts?: { stripContent?: boolean }): Promise<FilingOutput> {
+    const qs = opts?.stripContent ? '?strip_content=true' : ''
+    return request<FilingOutput>(`/filings/${accessionNumber}${qs}`)
+  },
+  getFilingItem(accessionNumber: string, itemNumber: string): Promise<FilingItem> {
+    return request<FilingItem>(`/filings/${accessionNumber}/items/${itemNumber}`)
   },
   // ── Admin / Dashboard ──
   adminStats(): Promise<AdminStats> {

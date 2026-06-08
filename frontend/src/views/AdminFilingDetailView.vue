@@ -23,7 +23,7 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    filing.value = await api.getFiling(props.accession)
+    filing.value = await api.getFiling(props.accession, { stripContent: true })
   } catch (e) {
     error.value = e instanceof Error ? e.message : '載入失敗'
   } finally {
@@ -271,6 +271,7 @@ function fmtConf(c: number | null): string {
       :open="drawerOpen"
       :item="selectedItem"
       :flags="selectedItemFlags"
+      :accession="props.accession"
       @close="drawerOpen = false"
     />
   </div>

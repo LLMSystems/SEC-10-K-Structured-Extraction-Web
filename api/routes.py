@@ -26,7 +26,7 @@ from models.job import (
     JobAnalytics,
 )
 from cache import CacheService
-from sec_10k_pipeline.models import FilingInput, FilingOutput
+from sec_10k_pipeline.models import FilingInput, FilingOutput, ItemResult
 from utils import parse_sec_url
 from item8_markdown import get_item8_markdown
 
@@ -138,12 +138,34 @@ async def admin_job_stats(failures_limit: int = Query(20, ge=1, le=100)):
     return await _cache.get_job_analytics(failures_limit=failures_limit)
 
 
+@router.get("/filings/{accession_number}/items/{item_number}", response_model=ItemResult)
+async def get_filing_item(accession_number: str, item_number: str):
+    """取得單一 item 的完整內容（含 content_text），供前端 lazy load 使用。"""
+    result = await _cache.get_filing(accession_number)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Filing not found in cache")
+    for item in result.items:
+        if item.item_number == item_number:
+            return item
+    raise HTTPException(status_code=404, detail=f"Item {item_number} not found")
+
+
 @router.get("/filings/{accession_number}", response_model=FilingOutput)
-async def get_filing(accession_number: str):
+async def get_filing(
+    accession_number: str,
+    strip_content: bool = Query(False, description="若為 true，移除所有 item 的 content_text 以減少傳輸大小"),
+):
     """直接查 cache，bypass job 系統。cache miss 時回 404，不觸發處理。"""
     result = await _cache.get_filing(accession_number)
     if result is None:
         raise HTTPException(status_code=404, detail="Filing not found in cache")
+    if strip_content:
+        result = result.model_copy(update={
+            "items": [
+                item.model_copy(update={"content_text": None})
+                for item in result.items
+            ]
+        })
     return result
 
 

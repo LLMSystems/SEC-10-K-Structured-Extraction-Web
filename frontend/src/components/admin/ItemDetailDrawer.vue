@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Ban, ExternalLink, Minus } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { AlertCircle, Ban, ExternalLink, Minus } from 'lucide-vue-next'
 import Drawer from '@/components/ui/Drawer.vue'
+import Skeleton from '@/components/ui/Skeleton.vue'
 import ItemStatusBadge from '@/components/result/ItemStatusBadge.vue'
+import { api } from '@/lib/api'
 import { renderMarkdown } from '@/lib/markdown'
 import { statusLabel } from '@/lib/statusLabels'
 import { flagLabel, severityClasses } from '@/lib/flagLabels'
@@ -12,18 +14,84 @@ const props = defineProps<{
   open: boolean
   item: FilingItem | null
   flags: ValidationFlag[]
+  accession?: string
 }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-const renderedHtml = computed(() =>
-  props.item?.content_text ? renderMarkdown(props.item.content_text) : '',
+// fetchedContent holds content_text retrieved from the lazy-load API call.
+// It is reset whenever the selected item changes.
+const fetchedContent = ref<string | null>(null)
+const isFetchingContent = ref(false)
+const fetchError = ref<string | null>(null)
+
+const renderedHtml = ref('')
+const isRendering = ref(false)
+
+// When item changes, clear previously fetched content.
+watch(
+  () => props.item?.item_number,
+  () => {
+    fetchedContent.value = null
+    fetchError.value = null
+    isFetchingContent.value = false
+  },
 )
-const charCount = computed(() => props.item?.content_text?.length ?? 0)
+
+// When the drawer opens (or the selected item changes while open), lazy-fetch
+// content_text if the item needs content but it was stripped from the main payload.
+watch(
+  [() => props.open, () => props.item] as const,
+  async ([open, item]) => {
+    if (!open || !item || !props.accession) return
+    const needsContent =
+      item.status === 'extracted' || item.status === 'incorporated_by_reference'
+    if (!needsContent) return
+    // Already have content either inline or from a previous fetch.
+    if (item.content_text !== null || fetchedContent.value !== null) return
+
+    isFetchingContent.value = true
+    fetchError.value = null
+    try {
+      const full = await api.getFilingItem(props.accession, item.item_number)
+      fetchedContent.value = full.content_text
+    } catch (e) {
+      fetchError.value = e instanceof Error ? e.message : '內容載入失敗'
+    } finally {
+      isFetchingContent.value = false
+    }
+  },
+)
+
+// The text to render: prefer lazily fetched content, fall back to inline.
+const activeContent = computed(() => fetchedContent.value ?? props.item?.content_text ?? null)
+
+// Defer markdown render to a macrotask so the drawer animation isn't blocked
+// by MarkdownIt + DOMPurify running synchronously on large content_text strings.
+watch(
+  activeContent,
+  (text) => {
+    if (!text) {
+      renderedHtml.value = ''
+      isRendering.value = false
+      return
+    }
+    isRendering.value = true
+    renderedHtml.value = ''
+    setTimeout(() => {
+      renderedHtml.value = renderMarkdown(text)
+      isRendering.value = false
+    }, 0)
+  },
+  { immediate: true },
+)
+
+const isLoading = computed(() => isFetchingContent.value || isRendering.value)
+const charCount = computed(() => activeContent.value?.length ?? 0)
 const hasContent = computed(
   () =>
     (props.item?.status === 'extracted' ||
       props.item?.status === 'incorporated_by_reference') &&
-    !!renderedHtml.value,
+    (isLoading.value || !!renderedHtml.value),
 )
 const charRangeText = computed(() => {
   const r = props.item?.char_range
@@ -78,8 +146,18 @@ const charRangeText = computed(() => {
       <hr class="my-4 border-border" />
 
       <!-- Content -->
+      <div v-if="fetchError" class="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm text-destructive">
+        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+        {{ fetchError }}
+      </div>
+      <div v-else-if="isLoading" class="space-y-3">
+        <Skeleton class="h-4 w-full" />
+        <Skeleton class="h-4 w-5/6" />
+        <Skeleton class="h-4 w-full" />
+        <Skeleton class="h-4 w-4/6" />
+      </div>
       <div
-        v-if="hasContent"
+        v-else-if="hasContent"
         class="markdown-body text-[15px] leading-[1.75] text-foreground"
         v-html="renderedHtml"
       />
