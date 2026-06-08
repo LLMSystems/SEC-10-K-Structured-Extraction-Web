@@ -4,10 +4,12 @@ Parser 抽象介面
 """
 
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from sec_10k_pipeline.models import RawItem, FilingMetadata, PreprocessedDocument
+from sec_10k_pipeline.models import (FilingMetadata, PreprocessedDocument,
+                                     RawItem)
 
 
 @dataclass

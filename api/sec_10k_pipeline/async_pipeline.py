@@ -5,17 +5,17 @@ AsyncPipeline
 """
 
 from __future__ import annotations
+
 import asyncio
 import logging
-from urllib.parse import urlparse
 import time
+from urllib.parse import urlparse
 
 import httpx
-
-from sec_10k_pipeline.pipeline import Pipeline, USER_AGENT, SUBMISSIONS_URL, BASE_URL
-from sec_10k_pipeline.models import (
-    FilingInput, FilingOutput, FilingInfo, FilingMetadata, TimingStats,
-)
+from sec_10k_pipeline.models import (FilingInfo, FilingInput, FilingMetadata,
+                                     FilingOutput, TimingStats)
+from sec_10k_pipeline.pipeline import (BASE_URL, SUBMISSIONS_URL, USER_AGENT,
+                                       Pipeline)
 
 logger = logging.getLogger(__name__)
 

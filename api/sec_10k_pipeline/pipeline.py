@@ -4,37 +4,38 @@ Pipeline
 """
 
 from __future__ import annotations
+
 import json
 import logging
 import re
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
-
-from sec_10k_pipeline.models import (
-    FilingInput, FilingOutput, FilingInfo, FilingMetadata, TimingStats, PreprocessedDocument, PageMarker,
-)
-from sec_10k_pipeline.parsers.base import BaseParser
-from sec_10k_pipeline.parsers.cross_reference_multispan_parser import CrossReferenceMultiSpanParser
-from sec_10k_pipeline.parsers.pdf_style_cross_reference_parser import PdfStyleCrossReferenceParser
-from sec_10k_pipeline.patterns import (
-    ITEM_IN_TABLE_PATTERN,
-    PAGE_NUMBER_PATTERN,
-    PAGE_NUMBER_BARE_PATTERN,
-    FINANCIAL_PAGE_PATTERN,
-    PAGE_WORD_PATTERN,
-    PAGE_HEADER_PATTERN,
-    SPLIT_UPPERCASE_PATTERN,
-)
-from sec_10k_pipeline.parsers.regex_parser import RegexParser
+from sec_10k_pipeline.models import (FilingInfo, FilingInput, FilingMetadata,
+                                     FilingOutput, ItemResult, PageMarker,
+                                     PreprocessedDocument, QualityReport,
+                                     TimingStats)
+from sec_10k_pipeline.parsers.bare_table_parser import BareTableParser
+from sec_10k_pipeline.parsers.base import BaseParser, ParseResult
+from sec_10k_pipeline.parsers.cross_reference_multispan_parser import \
+    CrossReferenceMultiSpanParser
 from sec_10k_pipeline.parsers.hybrid import HybridParser
-from sec_10k_pipeline.parsers.base import ParseResult
+from sec_10k_pipeline.parsers.pdf_style_cross_reference_parser import \
+    PdfStyleCrossReferenceParser
+from sec_10k_pipeline.parsers.regex_parser import RegexParser
+from sec_10k_pipeline.parsers.toc_anchor_parser import TocAnchorParser
+from sec_10k_pipeline.patterns import (_NUM_ALT, FINANCIAL_PAGE_PATTERN,
+                                       ITEM_IN_TABLE_PATTERN,
+                                       PAGE_HEADER_PATTERN,
+                                       PAGE_NUMBER_BARE_PATTERN,
+                                       PAGE_NUMBER_PATTERN, PAGE_WORD_PATTERN,
+                                       SPLIT_ITEM_WORD_PATTERN,
+                                       SPLIT_UPPERCASE_PATTERN)
 from sec_10k_pipeline.postprocessor import PostProcessor
 from sec_10k_pipeline.validators import Validator
-from sec_10k_pipeline.models import ItemResult, QualityReport
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,32 @@ USER_AGENT = "10K-Parser contact@example.com"
 BASE_URL = "https://www.sec.gov"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 PAGE_MARKER_PATTERN = re.compile(r"\[\[PAGE:(?P<page>\d+)\]\]")
+
+# TOC link text 中的 "Item N." 標籤（用於把 TOC 標題注入正文缺少 Item 編號的位置）
+_ITEM_LABEL_RE = re.compile(rf'(?:Item|ITEM|item)\s+(?:{_NUM_ALT})(?!\d)\.?', re.IGNORECASE)
+# 確認 body element 是否已有 Item 編號（有則不注入，避免重複）
+_ITEM_START_RE = re.compile(rf'(?:Item|ITEM|item)\s*(?:{_NUM_ALT})(?!\d)', re.IGNORECASE)
+
+# 佔位字元：在 compact 抽取時暫代 \xa0，避免被 strip=True 連同分隔語意一起吃掉
+_NBSP_PLACEHOLDER = "\x01"
+
+
+def _compact_table_text(table) -> str:
+    """
+    取得 table 的「無分隔」文字，能合併 inline 斷字（如 "I"+"TEM"="ITEM"），
+    同時保留 \xa0 作為分隔語意（如 "<b>Item&nbsp;</b><b>1.</b>" 不應被併成
+    "Item1." 而失去可偵測的 "Item 1" 邊界）。
+
+    做法：逐一取出文字節點，先把 \xa0 換成不會被 strip() 吃掉的佔位字元，
+    各自 strip 後直接相連（重現 get_text("", strip=True) 的合併行為），
+    最後把佔位字元還原成空白。
+    """
+    parts = []
+    for nav_str in table.find_all(string=True):
+        s = str(nav_str).replace("\xa0", _NBSP_PLACEHOLDER).strip()
+        if s:
+            parts.append(s)
+    return "".join(parts).replace(_NBSP_PLACEHOLDER, " ")
 
 
 class Pipeline:
@@ -61,6 +88,8 @@ class Pipeline:
             fallback=[
                 CrossReferenceMultiSpanParser(),
                 PdfStyleCrossReferenceParser(),
+                TocAnchorParser(),
+                BareTableParser(),
             ],
         )
         self.postprocessor = PostProcessor()
@@ -420,9 +449,13 @@ class Pipeline:
 
         # 從 TOC table 收集 item -> fragment 連結，並在正文目標前注入 marker，
         # 讓 fallback parser 可以從純文字中回推正文 offset。
+        # 同時記錄每個 anchor 對應的 Item 標籤文字（如 "Item 1."），用於修復
+        # 正文標題只寫節名（如 "BUSINESS"）而省略 "Item N." 前綴的格式（如 HG）。
         toc_anchor_ids: set[str] = set()
+        toc_item_labels: dict[str, str] = {}  # anchor_id → "Item N." from TOC link text
+
         for table in soup.find_all("table"):
-            table_text_compact = table.get_text("", strip=True)
+            table_text_compact = _compact_table_text(table)
             item_refs = {m.upper() for m in ITEM_IN_TABLE_PATTERN.findall(table_text_compact)}
             hash_links = [
                 link for link in table.find_all("a", href=True)
@@ -432,12 +465,24 @@ class Pipeline:
                 continue
 
             for link in hash_links:
-                toc_anchor_ids.add(link.get("href", "").split("#", 1)[1])
+                anchor_id = link.get("href", "").split("#", 1)[1]
+                toc_anchor_ids.add(anchor_id)
+                link_text = link.get_text(" ", strip=True)
+                m = _ITEM_LABEL_RE.search(link_text)
+                if m:
+                    toc_item_labels[anchor_id] = m.group(0)
 
         for anchor_id in toc_anchor_ids:
             target = soup.find(id=anchor_id)
             if target is not None:
-                target.insert_before(f"\n[[ANCHOR:{anchor_id}]]\n")
+                # 若 TOC 標記此 anchor 對應 "Item N."，但 body element 自身不含 Item 編號，
+                # 則在 anchor marker 後緊接注入該標籤，讓 RegexParser 能偵測到 Item 標題。
+                inject_label = ""
+                if anchor_id in toc_item_labels:
+                    nearby = target.get_text()[:80]
+                    if not _ITEM_START_RE.search(nearby):
+                        inject_label = f"{toc_item_labels[anchor_id]}\n"
+                target.insert_before(f"\n[[ANCHOR:{anchor_id}]]\n{inject_label}")
 
         for footer_div in self._iter_page_footer_divs(soup):
             page_number = self._extract_footer_page_number(footer_div)
@@ -454,7 +499,7 @@ class Pipeline:
 
         for table in soup.find_all("table"):
             # compact（無分隔）用於偵測，能正確合併 inline 斷字（"I"+"TEM"="ITEM"）
-            table_text_compact = table.get_text("", strip=True)
+            table_text_compact = _compact_table_text(table)
 
             # 計算此 table 中出現幾個「不同」的 Item 編號
             # TOC 型 table 通常包含 10+ 個 Item；章節標題 table 通常只有 1–3 個
@@ -467,6 +512,7 @@ class Pipeline:
                 fixed = table_text_nl
                 while True:
                     new = SPLIT_UPPERCASE_PATTERN.sub(r"\1\2", fixed)
+                    new = SPLIT_ITEM_WORD_PATTERN.sub("Item", new)
                     if new == fixed:
                         break
                     fixed = new
@@ -511,11 +557,12 @@ class Pipeline:
         # 反覆套用直到沒有變化（應對連續多層斷字）
         while True:
             fixed = SPLIT_UPPERCASE_PATTERN.sub(r"\1\2", text)
+            fixed = SPLIT_ITEM_WORD_PATTERN.sub("Item", fixed)
             if fixed == text:
                 break
             text = fixed
 
-        # ── 移除頁碼與頁眉（pattern 定義見 src/patterns.py）──
+        # ── 移除頁碼與頁眉（pattern 定義見 sec_10k_pipeline/patterns.py）──
         text = PAGE_NUMBER_PATTERN.sub("\n", text)
         text = PAGE_NUMBER_BARE_PATTERN.sub("\n", text)
         text = FINANCIAL_PAGE_PATTERN.sub("", text)

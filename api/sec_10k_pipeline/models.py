@@ -57,6 +57,7 @@ class ItemResult(BaseModel):
     status: ItemStatus
     confidence: Optional[float] = None  # parser 對此切割的信心（來自 RawItem）
     flag_codes: list[str] = Field(default_factory=list)  # 此 Item 命中的 validation flag code
+    spans: list[tuple[int, int]] = Field(default_factory=list)  # 多段 span 的個別範圍；單段時與 char_range 等價
 
 
 class FilingInfo(BaseModel):

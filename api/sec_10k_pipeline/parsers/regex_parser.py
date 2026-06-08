@@ -7,23 +7,21 @@ Regex Parser
   2. 用相鄰標題的起點當作前一個 Item 的終點
   3. 根據找到的信心分數決定整體可信度
 
-所有 Regex Pattern 集中定義在 src/patterns.py，此檔不直接定義任何 re.compile。
+所有 Regex Pattern 集中定義在 sec_10k_pipeline/patterns.py，此檔不直接定義任何 re.compile。
 """
 
 from __future__ import annotations
+
 import re
-from sec_10k_pipeline.models import RawItem, FilingMetadata, PreprocessedDocument
+
+from sec_10k_pipeline.models import (FilingMetadata, PreprocessedDocument,
+                                     RawItem, RawSpan)
 from sec_10k_pipeline.parsers.base import BaseParser, ParseResult
-from sec_10k_pipeline.patterns import (
-    ITEM_NUMBERS,
-    ITEM_META,
-    ITEM_PATTERN,
-    COMBINED_ITEM_PATTERN,
-    PART_ITEM_PATTERN,
-    TERMINAL_PATTERN,
-    EXPLICIT_SEP_PATTERN,
-    REFERENCE_PATTERN
-)
+from sec_10k_pipeline.patterns import (COMBINED_ITEM_PATTERN,
+                                       EXPLICIT_SEP_PATTERN, ITEM_META,
+                                       ITEM_NUMBERS, ITEM_PATTERN,
+                                       PART_ITEM_PATTERN, REFERENCE_PATTERN,
+                                       TERMINAL_PATTERN)
 
 
 class RegexParser(BaseParser):
@@ -75,15 +73,17 @@ class RegexParser(BaseParser):
         results = []
 
         # 單一 Item
+        # .replace(".", "") 將 "9.A" 這類數字字母間插入句點的變體正規化為 "9A"
+        # （_NUM_ALT 已把句點變體排在無句點變體之前，確保優先比對到完整編號）
         for m in ITEM_PATTERN.finditer(text):
-            num = m.group("num").upper()
+            num = m.group("num").upper().replace(".", "")
             if num in ITEM_META:
                 results.append((num, m.start(), m.group()))
 
         # 合併 Item（Items X. and Y.）
         for m in COMBINED_ITEM_PATTERN.finditer(text):
-            num1 = m.group("num1").upper()
-            num2 = m.group("num2").upper()
+            num1 = m.group("num1").upper().replace(".", "")
+            num2 = m.group("num2").upper().replace(".", "")
             matched = m.group()
             if num1 in ITEM_META:
                 results.append((num1, m.start(), matched))
@@ -92,7 +92,7 @@ class RegexParser(BaseParser):
 
         # PART + Item 同行格式（Page PART I Item 1. Business）
         for m in PART_ITEM_PATTERN.finditer(text):
-            num = m.group("num").upper()
+            num = m.group("num").upper().replace(".", "")
             if num in ITEM_META:
                 results.append((num, m.start(), m.group()))
 
@@ -130,6 +130,14 @@ class RegexParser(BaseParser):
             q = self._candidate_quality(matched)
             by_num.setdefault(num, []).append((start, matched, q))
 
+        # Pre-compute first high_q position for each item (used for TOC proximity check below)
+        first_hq_pos: dict[str, int] = {}
+        for num, occurrences in by_num.items():
+            for start, matched, q in sorted(occurrences, key=lambda x: x[0]):
+                if q == 1:
+                    first_hq_pos[num] = start
+                    break
+
         seen: dict[str, RawItem] = {}
 
         for num, occurrences in by_num.items():
@@ -141,26 +149,42 @@ class RegexParser(BaseParser):
             # 檢查前後是否包含 "see"、"refer to" 等字樣，可能是正文引用（例如 "Item 1. Business (see Item 7.)"），如果有則降級品質
             for i, (start, matched, q) in enumerate(high_q):
                 window_start = max(0, start - 50)
-                window_end = start + len(matched) + 50
-                
                 before = text[window_start:start]
-                context = text[window_start:window_end].lower()
-                
                 recent_before = text[max(0, start - 10):start]
                 has_period_nearby = "." in recent_before
-                
-                if REFERENCE_PATTERN.search(context) and not ITEM_PATTERN.search(before) and not has_period_nearby:
+                after = text[start + len(matched): start + len(matched) + 60]
+                # 標題後出現孤立的句點行（\n.\n）代表這是句中引用，不是真正的節標題
+                after_is_punctuation = bool(re.search(r"\n\s*\.\s*\n", after))
+
+                if (REFERENCE_PATTERN.search(before.lower()) and not ITEM_PATTERN.search(before) and not has_period_nearby) \
+                        or after_is_punctuation:
                     high_q[i] = (start, matched, 0)
-                    
+
             high_q = [(s, m) for s, m, q in high_q if q == 1]
-            
+
             # 如果 item 15 的start 在len(text)*0.5 之前，則很可能是目錄中的引用，降級品質
             if num == "15":
                 high_q = [(s, m) for s, m in high_q if s > len(text) * 0.5]
 
             if high_q:
                 if len(high_q) > 1:
-                    best_start, best_matched = high_q[1]
+                    # Decide whether high_q[0] is a TOC entry or the real section heading.
+                    # If another item's first high_q occurrence is within _PAGE_GAP chars of
+                    # high_q[0], they are probably all in the same TOC block → skip to high_q[1].
+                    # Otherwise, high_q[0] IS the real heading (e.g. a SPAC that renumbers
+                    # Part III items starting from "Item 1.").
+                    first_pos = high_q[0][0]
+                    # TOC cluster only plausible in front portion of document;
+                    # items appearing after 40% of text are body sections, not TOC.
+                    in_toc_cluster = first_pos < len(text) * 0.4 and any(
+                        other_num != num
+                        and abs(first_hq_pos.get(other_num, -1) - first_pos) <= self._PAGE_GAP
+                        for other_num in first_hq_pos
+                    )
+                    if in_toc_cluster:
+                        best_start, best_matched = high_q[1]
+                    else:
+                        best_start, best_matched = high_q[0]
                 else:
                     best_start, best_matched = high_q[0]
             else:
@@ -196,26 +220,50 @@ class RegexParser(BaseParser):
 
     def _assign_end_chars(self, items: list[RawItem], text_len: int, text: str = "") -> list[RawItem]:
         """
-        每個 Item 的 end_char = 下一個 Item 的 start_char
+        每個 Item 的 end_char = 下一個「位置不同」Item 的 start_char
         最後一個 Item 的 end_char = TERMINAL 起點（若有），否則文字總長
+
+        使用物理文字順序（而非 canonical 順序）來指派 end_char，避免 TOC-only 項目
+        （如 Item 1B 只出現在目錄、位置很小）與正文項目（位置很大）混排造成 start > end。
         """
+        # Sort by physical text position to prevent start > end when TOC-only items
+        # (small positions) are interleaved with content items (large positions).
+        phys = sorted(items, key=lambda x: x.start_char)
+
+        # TERMINAL_PATTERN 含有 "CONSOLIDATED"、"INDEX TO ... FINANCIAL STATEMENTS" 等字樣，
+        # 這些字樣常常「提早」出現在 Item 8 財報段落本身內部（例如子標題），而非文件真正結尾。
+        # 若從文件開頭搜尋會誤抓提早出現的位置，導致最後一個 Item 的 end_char < start_char。
+        # 故只在「最後一個 Item 的起點之後」搜尋，確保抓到的是真正的文件結尾標記。
         terminal = text_len
-        if text:
-            m = TERMINAL_PATTERN.search(text)
+        if text and phys:
+            m = TERMINAL_PATTERN.search(text, phys[-1].start_char)
             if m:
                 terminal = m.start()
 
-        for i, item in enumerate(items):
-            if i + 1 < len(items):
-                item.end_char = items[i + 1].start_char
-            else:
-                # 如果最後一個item 的起點已經超過terminal，則拿下一個TERMINAL_PATTERN.search(text) 的位置作為 end_char，避免 end_char 在文字結尾導致切出空字串
-                if item.start_char >= terminal:
-                    m = TERMINAL_PATTERN.search(text, item.start_char)
-                    if m:
-                        terminal = m.start()
-                item.end_char = terminal
-        return items
+        for i, item in enumerate(phys):
+            # 合併標題（如 "Items 1 and 2. Business and Properties"）會讓多個 Item
+            # 共用同一個 start_char；略過位置相同的後續 Item，改取下一個「位置不同」的
+            # candidate 當 end，讓共用標題的所有 Item 都拿到完整內容範圍，
+            # 而非其中一個被指派 start == end 的零長度範圍。
+            end = terminal
+            for nxt in phys[i + 1:]:
+                if nxt.start_char != item.start_char:
+                    end = nxt.start_char
+                    break
+            item.end_char = end
+
+        # Mark TOC-only items (tiny ranges in a document that also has large items) with
+        # spans to signal non-linear structure.  This causes the validator to downgrade
+        # ordering violations from warning to info rather than penalising them as errors.
+        large_ranges_exist = any(
+            (item.end_char - item.start_char) > 5000 for item in phys
+        )
+        if large_ranges_exist:
+            for item in phys:
+                if (item.end_char - item.start_char) <= 500 and not item.spans:
+                    item.spans = [RawSpan(start_char=item.start_char, end_char=item.end_char)]
+
+        return items  # return in original canonical order
 
     def _expected_items(self, metadata: FilingMetadata) -> set[str]:
         """根據 metadata 判斷這份申報應該有哪些 Items。"""

@@ -11,18 +11,15 @@ Postprocessor
 """
 
 from __future__ import annotations
+
 import re
-from sec_10k_pipeline.models import RawItem, ItemResult, FilingMetadata
-from sec_10k_pipeline.patterns import (
-    ITEM_META,
-    ITEM_NUMBERS,
-    HTML_TAG_PATTERN,
-    BY_REF_PATTERN,
-    FIN_STMT_BY_REF_PATTERN,
-    NOT_APPLICABLE_PATTERN,
-    RESERVED_PATTERN,
-    MINE_SAFETY_NA_PATTERN,
-)
+
+from sec_10k_pipeline.models import FilingMetadata, ItemResult, RawItem
+from sec_10k_pipeline.patterns import (BY_REF_PATTERN, FIN_STMT_BY_REF_PATTERN,
+                                       HTML_TAG_PATTERN, ITEM_META,
+                                       ITEM_NUMBERS, MINE_SAFETY_NA_PATTERN,
+                                       NOT_APPLICABLE_PATTERN,
+                                       RESERVED_PATTERN)
 
 
 def _strip_html(text: str) -> str:
@@ -182,6 +179,7 @@ class PostProcessor:
                 item_title=std_title,
                 content_text=stripped or None,
                 char_range=self._item_char_range(raw),
+                spans=self._item_spans(raw),
                 status="incorporated_by_reference",
             )
 
@@ -211,6 +209,7 @@ class PostProcessor:
                 item_title=std_title,
                 content_text=stripped,
                 char_range=self._item_char_range(raw),
+                spans=self._item_spans(raw),
                 status="incorporated_by_reference",
             )
 
@@ -225,6 +224,7 @@ class PostProcessor:
                 item_title=std_title,
                 content_text=stripped,
                 char_range=self._item_char_range(raw),
+                spans=self._item_spans(raw),
                 status="incorporated_by_reference",
             )
 
@@ -291,12 +291,24 @@ class PostProcessor:
             )
 
         # 6. 正常抽取（保留含 HTML 的原始 stripped，讓表格在 MD 中可渲染）
+        # Guard: if stripped content is very short after all pattern checks fail,
+        # the parser likely only found a TOC entry, not real content → missing.
+        if len(plain) < 50:
+            return ItemResult(
+                part=part,
+                item_number=num,
+                item_title=std_title,
+                content_text=None,
+                char_range=None,
+                status="missing",
+            )
         return ItemResult(
             part=part,
             item_number=num,
             item_title=std_title,
             content_text=stripped,
             char_range=self._item_char_range(raw),
+            spans=self._item_spans(raw),
             status="extracted",
         )
 
@@ -403,14 +415,19 @@ class PostProcessor:
             return False
 
         title_norm = self._normalize_ws(std_title).lower()
+        substantive_chars = 0
         for line in lines:
             norm = self._normalize_ws(line).lower()
             if self._is_na_token(line) or NOT_APPLICABLE_PATTERN.search(norm):
                 continue                                  # N/A 宣告行
             if title_norm and (norm in title_norm or title_norm in norm):
                 continue                                  # 標題（含換行/標點變體）
-            if len(norm) >= self._SUBSTANTIVE_LEN:
-                return False                              # 有實質長句 → 不是純 NA
+            substantive_chars += len(norm)
+            # Single long line OR accumulated short lines both signal real content.
+            # Preprocessors sometimes break inline links across lines, producing
+            # many sub-80-char fragments that together form a substantive sentence.
+            if len(norm) >= self._SUBSTANTIVE_LEN or substantive_chars >= self._SUBSTANTIVE_LEN:
+                return False                              # 有實質內容 → 不是純 NA
         return True
 
     def _looks_like_financial_by_reference(self, plain: str) -> bool:
@@ -441,3 +458,10 @@ class PostProcessor:
         if raw.end_char is None:
             return None
         return (raw.start_char, raw.end_char)
+
+    def _item_spans(self, raw: RawItem) -> list[tuple[int, int]]:
+        if raw.spans:
+            return [(s.start_char, s.end_char) for s in sorted(raw.spans, key=lambda s: s.start_char)]
+        if raw.end_char is not None:
+            return [(raw.start_char, raw.end_char)]
+        return []

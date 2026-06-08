@@ -1,12 +1,13 @@
 """
 API 專用的 request / response schema。
-不修改 src/models.py，避免污染核心資料結構。
+不修改 sec_10k_pipeline/models.py，避免污染核心資料結構。
 """
 
 from __future__ import annotations
-from typing import Optional
-from pydantic import BaseModel
 
+from typing import Optional
+
+from pydantic import BaseModel
 from sec_10k_pipeline.models import FilingOutput
 
 

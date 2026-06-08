@@ -8,7 +8,9 @@ LLM Parser（Stub）
 """
 
 from __future__ import annotations
-from sec_10k_pipeline.models import RawItem, FilingMetadata, PreprocessedDocument
+
+from sec_10k_pipeline.models import (FilingMetadata, PreprocessedDocument,
+                                     RawItem)
 from sec_10k_pipeline.parsers.base import BaseParser, ParseResult
 
 
