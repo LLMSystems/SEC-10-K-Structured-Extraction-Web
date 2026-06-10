@@ -1,8 +1,14 @@
 <div align="center">
 
-# SEC-10-K-Structured-Extraction-Web-Demo
+# SEC 10-K 結構化抽取
 
-**將 SEC 10-K 申報文件轉換為結構化資料與可讀 Markdown 的 Demo**
+**將原始 SEC EDGAR 申報文件轉換為結構化 JSON 與可讀 Markdown**
+
+[English](README.md) | [中文](README_zh-CN.md)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-≥%203.10-blue)
+![Node](https://img.shields.io/badge/node-≥%2018-green)
 
 https://github.com/user-attachments/assets/02e51b12-4362-44bf-afa3-aca48c5852c0
 
@@ -10,246 +16,111 @@ https://github.com/user-attachments/assets/02e51b12-4362-44bf-afa3-aca48c5852c0
 
 ---
 
-## 一、功能概覽
+SEC 10-K 申報文件出了名地難處理。原始 EDGAR 文件是格式不一的 HTML，各家公司的 Item 分界寫法都不同，而要從 XBRL 還原一張資產負債表，光是把數字和標籤對上就要同時解析三個 Linkbase 檔案。
 
-本專案提供一站式的 SEC 10-K 年報解析服務，從原始 EDGAR 文件抽取結構化資料並渲染為人類可讀的格式。
+這個專案提供一條解析 Pipeline 加上 Web UI，把這些麻煩全部包辦。送入任何 10-K 申報文件的網址，就能取回完整的結構化 JSON，每個 Item 都已標註並抽取完畢；也可以直接把 Item 8 財務報表渲染成 Markdown。
 
-- **Item 結構化抽取**：自動識別並分割 10-K 內各個 Item（Part I / II / III / IV），輸出標準化的 `FilingOutput` JSON
-- **Item Status 標註**：區分 `extracted` / `incorporated_by_reference` / `not_applicable` / `reserved` / `missing` 五種狀態
-- **XBRL 財報擷取**：從 XBRL Instance + Presentation + Label Linkbase 直接還原 Item 8 主要財務報表
-- **Markdown 渲染**：將 XBRL Facts 渲染為可讀的 Markdown，包含主表（Income Statement、Balance Sheet、Cash Flow 等）、數字附註與文字揭露
-- **非同步 Job Queue**：請求送出後立即取得 `job_id`，背景處理完成後可輪詢取回結果
-- **Cache 機制**：以 `accession_number` 作為 Cache Key，相同申報文件只處理一次
-- **雙輸入模式**：支援 `cik + accession_number` 或直接給 EDGAR URL 兩種輸入方式
-- **Admin 面板**：系統健康儀表板（Job 狀態分佈、最近失敗）、Flag 統計分析（規則觸發頻率、問題 Item、各 Parser 表現、階段耗時）、驗證規則說明，以及可懶加載內容的 Item 詳情側抽屜
+## 功能
 
----
+- **完整 Item 抽取** — 自動拆分 Part I / II / III / IV，並將每個 Item 標註為 `extracted`、`incorporated_by_reference`、`not_applicable`、`reserved` 或 `missing`
+- **XBRL 財報還原** — 解析 Instance + Presentation + Label Linkbase，重建 Item 8 主表（損益表、資產負債表、現金流量表等）
+- **Markdown 渲染** — 輸出乾淨可讀的 Markdown，含數字附註與文字揭露
+- **非同步 Job Queue** — 送出申報後立即拿到 `job_id`，背景處理完成後再輪詢取結果
+- **Cache 機制** — 相同申報只處理一次，以 `accession_number` 為 key
+- **雙輸入模式** — 支援 `cik + accession_number` 或直接給 EDGAR URL
+- **Admin 面板** — Job 健康儀表板、Flag 統計分析、各 Parser 表現，以及支援懶加載的 Item 詳情側抽屜
 
-## 二、專案架構
+## 快速開始
 
-```
-SEC-10-K-Structured-Extraction-Web-Demo/
-├── api/                              # 後端 FastAPI 服務
-│   ├── main.py                       # FastAPI app 入口、lifespan、CORS
-│   ├── routes.py                     # POST /jobs, GET /jobs/{id}, POST /xbrl-markdown ...
-│   ├── worker.py                     # 背景 Job Worker（asyncio）
-│   ├── cache.py                      # CacheService（filings / jobs 讀寫封裝）
-│   ├── db.py                         # aiosqlite schema 初始化
-│   ├── utils.py                      # SEC URL 解析等工具
-│   ├── item8_markdown.py             # 一步式 XBRL → Markdown 便利函數
-│   ├── models/
-│   │   └── job.py                    # API 專用 request/response schema
-│   ├── sec_10k_pipeline/             # 解析引擎
-│   │   ├── pipeline.py               # 同步 Pipeline
-│   │   ├── async_pipeline.py         # 非同步版本（httpx + executor）
-│   │   ├── postprocessor.py          # Item 後處理（清理、標註 status）
-│   │   ├── patterns.py               # 正則樣式
-│   │   ├── models.py                 # FilingInput / FilingOutput / ItemResult
-│   │   ├── item8_xbrl_facts.py       # XBRL 解析（Instance + Presentation + Label）
-│   │   ├── render_item8_markdown.py  # XBRL → Markdown 渲染
-│   │   └── parsers/
-│   │       ├── regex_parser.py       # Regex parser
-│   │       ├── llm_parser.py         # LLM-assisted parser
-│   │       └── hybrid.py             # Hybrid parser（regex + LLM fallback）
-│   └── requirements.txt
-│
-├── frontend/                         # Vue 3 前端
-│   ├── src/
-│   │   ├── views/                    # 頁面元件
-│   │   ├── components/               # 共用元件（含 shadcn-vue）
-│   │   ├── stores/                   # Pinia stores
-│   │   ├── router/                   # Vue Router
-│   │   ├── types/                    # TypeScript 型別
-│   │   └── lib/                      # API client、utils
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── docs/
-│   ├── api.md                        # API 使用文檔
-│   ├── api-design.md                 # API 架構設計
-│   └── frontend-design.md            # 前端設計文檔
-│
-├── assets/                           # README 截圖
-└── README.md
-```
-
-## 三、技術選型
-
-### 後端
-
-| 類別 | 技術 | 用途 |
-|---|---|---|
-| Web Framework | **FastAPI** | 路由、自動 OpenAPI 文檔、Pydantic 驗證 |
-| ASGI Server | **Uvicorn** | 開發與正式環境執行 |
-| HTTP Client | **httpx** / **requests** | SEC EDGAR 文件下載 |
-| 資料庫 | **SQLite** (`aiosqlite`) | Jobs / Filings cache，可平移至 PostgreSQL |
-| 任務佇列 | **asyncio.Queue** | 輕量級背景 Job Queue |
-| HTML / XML 解析 | **lxml** / **BeautifulSoup** | XBRL 與 10-K HTML 處理 |
-| 文字比對 | **rapidfuzz** | Item 標題模糊匹配 |
-| 表格渲染 | **tabulate** / **tabulate_html** | HTML 表格轉 Markdown |
-| 資料模型 | **Pydantic** | FilingInput / FilingOutput 強型別 |
-
-### 前端
-
-| 類別 | 技術 | 用途 |
-|---|---|---|
-| Framework | **Vue 3**（`^3.5`） | Composition API + `<script setup>` |
-| Language | **TypeScript**（`~6.0`） | 全程強型別 |
-| Build Tool | **Vite**（`^8.0`） | 開發伺服器與打包 |
-| Router | **Vue Router**（`^5.0`） | SPA 路由 |
-| State | **Pinia**（`^3.0`） | 全域狀態管理 |
-| UI Kit | **shadcn-vue** + **Tailwind CSS v4** | Zinc 主題、Light/Dark 雙模式 |
-| Icons | **lucide-vue-next** | 圖示 |
-| Markdown | **markdown-it** + **dompurify** | Item 8 Markdown 渲染 |
-
----
-
-## 四、快速開始
-
-### 環境需求
-
-- Python `>= 3.10`
-- Node.js `>= 18`
-- npm
-
-### 1. 啟動後端
+**環境需求：** Python ≥ 3.10、Node.js ≥ 18
 
 ```bash
+# 後端
 cd api
 pip install -r requirements.txt
-
-# 啟動 API（預設 http://localhost:8000）
 uvicorn main:app --reload
-```
+# → http://localhost:8000（互動式 API 文檔在 /docs）
 
-互動式 API 文檔：`http://localhost:8000/docs`
-
-### 2. 啟動前端
-
-```bash
+# 前端（新開一個終端機）
 cd frontend
 npm install
 npm run dev
-# 開發伺服器預設 http://localhost:5173
+# → http://localhost:5173
 ```
 
-### 3. 環境變數
-**後端**
+**環境變數**
 
-| 變數 | 預設值 | 說明 |
-|---|---|---|
-| `DB_PATH` | `./data/sec_extraction.db` | SQLite 資料庫路徑 |
-| `CORS_ORIGINS` | `http://localhost:5173` | 允許跨域來源（逗號分隔） |
+`api/.env`
+```
+DB_PATH=./data/sec_extraction.db
+CORS_ORIGINS=http://localhost:5173
+```
 
-可在 `api/.env` 設定。
+`frontend/.env`
+```
+VITE_API_BASE_URL=http://localhost:8000
+```
 
-**前端**
+## 使用方式
 
-| 變數 | 預設值 | 說明 |
-|---|---|---|
-| `VITE_API_BASE_URL` | `自行填入` | 後端網址 |
-
-可在 `frontend/.env` 設定。
-
-### 4. 端到端測試
+透過 Web UI 送出申報，或直接呼叫 API：
 
 ```bash
-# 送出解析請求
+# 送出解析 Job
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{"cik":"0000320193","accession_number":"0000320193-23-000106"}'
 # → { "job_id": "...", "status": "pending", "cache_hit": false }
-
-# 取得 Item 8 XBRL Markdown
-curl -X POST http://localhost:8000/xbrl-markdown \
-  -H "Content-Type: application/json" \
-  -d '{"cik":"0000104169","accession_number":"0000104169-24-000056"}' \
-  -o report.md
 ```
 
-或直接以 Python 使用解析模組：
+或直接在 Python 裡使用解析模組：
+```
+from api.sec_10k_pipeline.pipeline import Pipeline
+from api.sec_10k_pipeline.models import FilingInput
 
-```python
-from api.sec_10k_pipeline.item8_xbrl_facts import get_item8_xbrl_facts
-from api.sec_10k_pipeline.render_item8_markdown import render_markdown
-from api.item8_markdown import get_item8_markdown
+pipeline = Pipeline()
 
-# 兩步式
-payload = get_item8_xbrl_facts("0000104169", "0000104169-24-000056")
-markdown = render_markdown(payload)
+# Option 1: CIK + Accession Number
+result = pipeline.run(FilingInput(
+    cik="0000320193",
+    accession_number="0000320193-23-000106",
+))
 
-# 一步式
-markdown = get_item8_markdown("0000104169", "0000104169-24-000056")
+# Option 2: Direct URL
+result = pipeline.run(FilingInput(
+    url="https://www.sec.gov/Archives/edgar/data/.../filing.htm",
+))
+
+# Save results (JSON + Markdown)
+result = pipeline.run(input, save_to="output/")
 ```
 
----
+完整 API 文檔：[docs/api.md](docs/api.md)
 
-## 五、API 摘要
+## 技術選型
 
-完整文檔請見 [docs/api.md](docs/api.md)。
+**後端：** FastAPI · SQLite (aiosqlite) · lxml / BeautifulSoup · Pydantic · asyncio
 
-| 方法 | 路徑 | 功能 | 同步性 |
-|---|---|---|---|
-| `POST` | `/jobs` | 送出 10-K 解析請求，立即取得 `job_id` | 非同步 |
-| `GET` | `/jobs/{job_id}` | 輪詢 Job 狀態與 `FilingOutput` 結果 | — |
-| `GET` | `/filings/{accession_number}` | 直接從 Cache 取已完成的 `FilingOutput`（cache miss 回 404） | — |
-| `POST` | `/xbrl-markdown` | 同步擷取 XBRL 並渲染為 Markdown，回 `text/markdown` | 同步 |
+**前端：** Vue 3 · TypeScript · Vite · Pinia · shadcn-vue · Tailwind CSS v4
 
-### POST `/jobs`
+## 專案結構
 
-```json
-// Request
-{ "cik": "0000320193", "accession_number": "0000320193-23-000106" }
-// 或
-{ "url": "https://www.sec.gov/Archives/edgar/data/320193/.../aapl-20250927.htm" }
-
-// Response 202
-{ "job_id": "3fa85f64-...", "status": "pending", "cache_hit": false }
+```
+api/                  # FastAPI 後端 + 解析 Pipeline
+├── sec_10k_pipeline/ # 核心引擎（Regex、LLM 輔助、XBRL 解析）
+└── ...
+frontend/             # Vue 3 SPA
+docs/                 # API 文檔、架構說明、驗證規則
 ```
 
-### GET `/jobs/{job_id}`
+## 貢獻
 
-```json
-{
-  "job_id": "3fa85f64-...",
-  "status": "done",          // pending | running | done | failed
-  "result": { "filing_info": {...}, "items": [...], "timing": {...} },
-  "error": null,
-  "created_at": "2026-05-12T10:00:00Z",
-  "completed_at": "2026-05-12T10:00:01Z"
-}
-```
+歡迎提 Issue 和 Pull Request。如果你遇到解析結果不正確的申報文件，或有想要的功能，開 Issue 是最好的起點 — 來自真實申報文件的邊界案例尤其有幫助。
 
-### POST `/xbrl-markdown`
+1. Fork 此 repo 並建立分支
+2. 修改程式碼，寫清楚的 commit message
+3. 開 PR，說明改了什麼、為什麼改
 
-```json
-// Request
-{ "cik": "0000104169", "accession_number": "0000104169-24-000056" }
+## 授權
 
-// Response 200 (Content-Type: text/markdown)
-# Ford Motor Co Item 8 Report
-- CIK: `0000104169`
-- ...
-## Consolidated Statements of Operations
-| Line Item | FY2023 ... | FY2022 ... |
-...
-```
-
-### Item Status
-
-| Status | 說明 |
-|---|---|
-| `extracted` | 成功抽取內容，`content_text` 有值 |
-| `incorporated_by_reference` | 引用其他文件（常見於 Part III） |
-| `not_applicable` | 公司明確表示不適用 |
-| `reserved` | SEC 規定保留（如 Item 6） |
-| `missing` | Parser 找不到此 Item |
-
----
-
-## 文件索引
-
-- [docs/api.md](docs/api.md) — API 端點使用說明
-- [docs/api-design.md](docs/api-design.md) — 後端架構設計
-- [docs/frontend-design.md](docs/frontend-design.md) — 前端視覺與互動設計
-- [docs/validator-rules.md](docs/validator-rules.md) — 驗證層規則與品質報告（含數據出處）
+MIT — 詳見 [LICENSE](LICENSE)。

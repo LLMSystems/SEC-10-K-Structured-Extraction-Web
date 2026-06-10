@@ -1,10 +1,14 @@
 <div align="center">
 
-# SEC-10-K-Structured-Extraction-Web-Demo
+# SEC 10-K Structured Extraction
 
-**A demo that converts SEC 10-K filings into structured data and human-readable Markdown**
+**Turn raw SEC EDGAR filings into clean structured JSON and readable Markdown**
 
 [English](README.md) | [中文](README_zh-CN.md)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-≥%203.10-blue)
+![Node](https://img.shields.io/badge/node-≥%2018-green)
 
 https://github.com/user-attachments/assets/02e51b12-4362-44bf-afa3-aca48c5852c0
 
@@ -12,247 +16,112 @@ https://github.com/user-attachments/assets/02e51b12-4362-44bf-afa3-aca48c5852c0
 
 ---
 
-## 1. Features
+SEC 10-K filings are notoriously hard to work with. Raw EDGAR documents are inconsistent HTML, Item boundaries vary across filers, and reconstructing a balance sheet from XBRL means navigating three separate linkbase files just to get a number with a label.
 
-A one-stop service for parsing SEC 10-K annual reports — extracting structured data from raw EDGAR filings and rendering them into human-readable formats.
+This project provides a parsing pipeline + web UI that handles all of that. Submit any 10-K filing URL and get back structured JSON with every Item labeled and extracted — or render Item 8 financial statements directly to Markdown.
 
-- **Structured Item Extraction**: Automatically identifies and splits all Items in a 10-K (Part I / II / III / IV), outputting a standardized `FilingOutput` JSON
-- **Item Status Labeling**: Distinguishes five statuses — `extracted` / `incorporated_by_reference` / `not_applicable` / `reserved` / `missing`
-- **XBRL Financial Data Extraction**: Reconstructs Item 8 financial statements directly from XBRL Instance + Presentation + Label Linkbase
-- **Markdown Rendering**: Renders XBRL facts into readable Markdown, including primary statements (Income Statement, Balance Sheet, Cash Flow, etc.), numeric footnotes, and text disclosures
-- **Async Job Queue**: Returns a `job_id` immediately upon submission; poll to retrieve results after background processing completes
-- **Caching**: Uses `accession_number` as the cache key — identical filings are only processed once
-- **Dual Input Modes**: Accepts either `cik + accession_number` or a direct EDGAR URL
-- **Admin Panel**: System health dashboard (job status distribution, recent failures), flag analytics (rule trigger frequency, problematic items, per-parser performance, stage timing), validator rule reference, and an item detail drawer with lazy-loaded content
+## Features
 
----
+- **Full Item extraction** — splits all Parts (I / II / III / IV) and labels each Item as `extracted`, `incorporated_by_reference`, `not_applicable`, `reserved`, or `missing`
+- **XBRL financial reconstruction** — parses Instance + Presentation + Label linkbases to rebuild Item 8 tables (Income Statement, Balance Sheet, Cash Flow, etc.)
+- **Markdown rendering** — outputs clean, readable Markdown including numeric footnotes and text disclosures
+- **Async job queue** — submit a filing and get a `job_id` immediately; poll for results when processing finishes
+- **Caching** — same filing processed only once, keyed by `accession_number`
+- **Dual input modes** — accepts `cik + accession_number` or a direct EDGAR URL
+- **Admin panel** — job health dashboard, flag analytics, per-parser performance, and an item detail drawer
 
-## 2. Project Structure
+## Quick Start
 
-```
-SEC-10-K-Structured-Extraction-Web-Demo/
-├── api/                              # FastAPI backend
-│   ├── main.py                       # FastAPI app entrypoint, lifespan, CORS
-│   ├── routes.py                     # POST /jobs, GET /jobs/{id}, POST /xbrl-markdown ...
-│   ├── worker.py                     # Background job worker (asyncio)
-│   ├── cache.py                      # CacheService (filings / jobs read-write wrapper)
-│   ├── db.py                         # aiosqlite schema initialization
-│   ├── utils.py                      # SEC URL parsing and utilities
-│   ├── item8_markdown.py             # One-step XBRL → Markdown convenience function
-│   ├── models/
-│   │   └── job.py                    # API request/response schemas
-│   ├── sec_10k_pipeline/             # Parsing engine
-│   │   ├── pipeline.py               # Synchronous pipeline
-│   │   ├── async_pipeline.py         # Async version (httpx + executor)
-│   │   ├── postprocessor.py          # Item post-processing (cleanup, status labeling)
-│   │   ├── patterns.py               # Regex patterns
-│   │   ├── models.py                 # FilingInput / FilingOutput / ItemResult
-│   │   ├── item8_xbrl_facts.py       # XBRL parsing (Instance + Presentation + Label)
-│   │   ├── render_item8_markdown.py  # XBRL → Markdown rendering
-│   │   └── parsers/
-│   │       ├── regex_parser.py       # Regex parser
-│   │       ├── llm_parser.py         # LLM-assisted parser
-│   │       └── hybrid.py             # Hybrid parser (regex + LLM fallback)
-│   └── requirements.txt
-│
-├── frontend/                         # Vue 3 frontend
-│   ├── src/
-│   │   ├── views/                    # Page components
-│   │   ├── components/               # Shared components (including shadcn-vue)
-│   │   ├── stores/                   # Pinia stores
-│   │   ├── router/                   # Vue Router
-│   │   ├── types/                    # TypeScript types
-│   │   └── lib/                      # API client, utils
-│   ├── package.json
-│   └── vite.config.ts
-│
-├── docs/
-│   ├── api.md                        # API usage documentation
-│   ├── api-design.md                 # API architecture design
-│   └── frontend-design.md            # Frontend design documentation
-│
-├── assets/                           # README screenshots
-└── README.md
-```
-
-## 3. Tech Stack
-
-### Backend
-
-| Category | Technology | Purpose |
-|---|---|---|
-| Web Framework | **FastAPI** | Routing, automatic OpenAPI docs, Pydantic validation |
-| ASGI Server | **Uvicorn** | Development and production server |
-| HTTP Client | **httpx** / **requests** | SEC EDGAR document downloads |
-| Database | **SQLite** (`aiosqlite`) | Jobs / filings cache; portable to PostgreSQL |
-| Task Queue | **asyncio.Queue** | Lightweight background job queue |
-| HTML / XML Parsing | **lxml** / **BeautifulSoup** | XBRL and 10-K HTML processing |
-| Fuzzy Matching | **rapidfuzz** | Item title fuzzy matching |
-| Table Rendering | **tabulate** / **tabulate_html** | HTML table to Markdown conversion |
-| Data Models | **Pydantic** | Strongly typed FilingInput / FilingOutput |
-
-### Frontend
-
-| Category | Technology | Purpose |
-|---|---|---|
-| Framework | **Vue 3** (`^3.5`) | Composition API + `<script setup>` |
-| Language | **TypeScript** (`~6.0`) | End-to-end strong typing |
-| Build Tool | **Vite** (`^8.0`) | Dev server and bundling |
-| Router | **Vue Router** (`^5.0`) | SPA routing |
-| State | **Pinia** (`^3.0`) | Global state management |
-| UI Kit | **shadcn-vue** + **Tailwind CSS v4** | Zinc theme, light/dark mode |
-| Icons | **lucide-vue-next** | Icons |
-| Markdown | **markdown-it** + **dompurify** | Item 8 Markdown rendering |
-
----
-
-## 4. Quick Start
-
-### Prerequisites
-
-- Python `>= 3.10`
-- Node.js `>= 18`
-- npm
-
-### 1. Start the backend
+**Prerequisites:** Python ≥ 3.10, Node.js ≥ 18
 
 ```bash
+# Backend
 cd api
 pip install -r requirements.txt
-
-# Start the API (default: http://localhost:8000)
 uvicorn main:app --reload
-```
+# → http://localhost:8000  (interactive API docs at /docs)
 
-Interactive API docs: `http://localhost:8000/docs`
-
-### 2. Start the frontend
-
-```bash
+# Frontend (new terminal)
 cd frontend
 npm install
 npm run dev
-# Dev server default: http://localhost:5173
+# → http://localhost:5173
 ```
 
-### 3. Environment variables
+**Environment variables**
 
-**Backend**
+`api/.env`
+```
+DB_PATH=./data/sec_extraction.db
+CORS_ORIGINS=http://localhost:5173
+```
 
-| Variable | Default | Description |
-|---|---|---|
-| `DB_PATH` | `./data/sec_extraction.db` | SQLite database path |
-| `CORS_ORIGINS` | `http://localhost:5173` | Allowed CORS origins (comma-separated) |
+`frontend/.env`
+```
+VITE_API_BASE_URL=http://localhost:8000
+```
 
-Configure in `api/.env`.
+## Usage
 
-**Frontend**
-
-| Variable | Default | Description |
-|---|---|---|
-| `VITE_API_BASE_URL` | *(fill in)* | Backend URL |
-
-Configure in `frontend/.env`.
-
-### 4. End-to-end test
+Submit any filing via the web UI, or call the API directly:
 
 ```bash
-# Submit a parsing request
+# Submit a parsing job
 curl -X POST http://localhost:8000/jobs \
   -H "Content-Type: application/json" \
   -d '{"cik":"0000320193","accession_number":"0000320193-23-000106"}'
 # → { "job_id": "...", "status": "pending", "cache_hit": false }
-
-# Fetch Item 8 XBRL Markdown
-curl -X POST http://localhost:8000/xbrl-markdown \
-  -H "Content-Type: application/json" \
-  -d '{"cik":"0000104169","accession_number":"0000104169-24-000056"}' \
-  -o report.md
 ```
 
 Or use the parsing module directly in Python:
 
-```python
-from api.sec_10k_pipeline.item8_xbrl_facts import get_item8_xbrl_facts
-from api.sec_10k_pipeline.render_item8_markdown import render_markdown
-from api.item8_markdown import get_item8_markdown
+```
+from api.sec_10k_pipeline.pipeline import Pipeline
+from api.sec_10k_pipeline.models import FilingInput
 
-# Two-step
-payload = get_item8_xbrl_facts("0000104169", "0000104169-24-000056")
-markdown = render_markdown(payload)
+pipeline = Pipeline()
 
-# One-step
-markdown = get_item8_markdown("0000104169", "0000104169-24-000056")
+# Option 1: CIK + Accession Number
+result = pipeline.run(FilingInput(
+    cik="0000320193",
+    accession_number="0000320193-23-000106",
+))
+
+# Option 2: Direct URL
+result = pipeline.run(FilingInput(
+    url="https://www.sec.gov/Archives/edgar/data/.../filing.htm",
+))
+
+# Save results (JSON + Markdown)
+result = pipeline.run(input, save_to="output/")
 ```
 
----
+Full API reference: [docs/api.md](docs/api.md)
 
-## 5. API Reference
+## Tech Stack
 
-See [docs/api.md](docs/api.md) for full documentation.
+**Backend:** FastAPI · SQLite (aiosqlite) · lxml / BeautifulSoup · Pydantic · asyncio
 
-| Method | Path | Description | Mode |
-|---|---|---|---|
-| `POST` | `/jobs` | Submit a 10-K parsing request, get `job_id` immediately | Async |
-| `GET` | `/jobs/{job_id}` | Poll job status and retrieve `FilingOutput` result | — |
-| `GET` | `/filings/{accession_number}` | Fetch a completed `FilingOutput` from cache (404 on miss) | — |
-| `POST` | `/xbrl-markdown` | Synchronously extract XBRL and render to Markdown (`text/markdown`) | Sync |
+**Frontend:** Vue 3 · TypeScript · Vite · Pinia · shadcn-vue · Tailwind CSS v4
 
-### POST `/jobs`
+## Project Layout
 
-```json
-// Request
-{ "cik": "0000320193", "accession_number": "0000320193-23-000106" }
-// or
-{ "url": "https://www.sec.gov/Archives/edgar/data/320193/.../aapl-20250927.htm" }
-
-// Response 202
-{ "job_id": "3fa85f64-...", "status": "pending", "cache_hit": false }
+```
+api/                  # FastAPI backend + parsing pipeline
+├── sec_10k_pipeline/ # Core engine (regex, LLM-assisted, XBRL parsing)
+└── ...
+frontend/             # Vue 3 SPA
+docs/                 # API reference, architecture notes, validator rules
 ```
 
-### GET `/jobs/{job_id}`
+## Contributing
 
-```json
-{
-  "job_id": "3fa85f64-...",
-  "status": "done",          // pending | running | done | failed
-  "result": { "filing_info": {...}, "items": [...], "timing": {...} },
-  "error": null,
-  "created_at": "2026-05-12T10:00:00Z",
-  "completed_at": "2026-05-12T10:00:01Z"
-}
-```
+Issues and pull requests are welcome. If you find a filing that parses incorrectly, or a feature you'd like to see, opening an issue is the best place to start — edge cases from real filings are especially useful.
 
-### POST `/xbrl-markdown`
+1. Fork the repo and create a branch
+2. Make your change with a clear commit message
+3. Open a PR describing what changed and why
 
-```json
-// Request
-{ "cik": "0000104169", "accession_number": "0000104169-24-000056" }
+## License
 
-// Response 200 (Content-Type: text/markdown)
-# Ford Motor Co Item 8 Report
-- CIK: `0000104169`
-- ...
-## Consolidated Statements of Operations
-| Line Item | FY2023 ... | FY2022 ... |
-...
-```
-
-### Item Status
-
-| Status | Description |
-|---|---|
-| `extracted` | Content successfully extracted; `content_text` is populated |
-| `incorporated_by_reference` | References another document (common in Part III) |
-| `not_applicable` | Company explicitly states not applicable |
-| `reserved` | SEC-reserved item (e.g. Item 6) |
-| `missing` | Parser could not locate this item |
-
----
-
-## Documentation
-
-- [docs/api.md](docs/api.md) — API endpoint reference
-- [docs/api-design.md](docs/api-design.md) — Backend architecture design
-- [docs/frontend-design.md](docs/frontend-design.md) — Frontend visual and interaction design
-- [docs/validator-rules.md](docs/validator-rules.md) — Validator rules and quality report (with data sources)
+MIT — see [LICENSE](LICENSE) for details.
